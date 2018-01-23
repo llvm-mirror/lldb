@@ -30,7 +30,11 @@ PyObject*
 SBTypeToSWIGWrapper (const char* c_str)
 {
     if (c_str)
-        return PyString_FromString(c_str);
+        #if PY_MAJOR_VERSION > 2
+            return PyUnicode_FromString(c_str);
+        #else
+            return PyString_FromString(c_str);
+        #endif
     return NULL;
 }
 
