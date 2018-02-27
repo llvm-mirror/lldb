@@ -69,6 +69,7 @@ add_lldb_library(lldbCore
     lldbPluginProcessUtility
     lldbPluginCPlusPlusLanguage
     lldbPluginObjCLanguage
+    lldbPluginDLanguage
     lldbPluginObjectFileJIT
     ${LLDB_CURSES_LIBS}
 

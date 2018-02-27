@@ -49,7 +49,8 @@ public:
   enum ManglingScheme {
     eManglingSchemeNone = 0,
     eManglingSchemeMSVC,
-    eManglingSchemeItanium
+    eManglingSchemeItanium,
+    eManglingSchemeD
   };
 
   //----------------------------------------------------------------------

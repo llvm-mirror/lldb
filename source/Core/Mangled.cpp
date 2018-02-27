@@ -37,6 +37,7 @@
 
 #include "Plugins/Language/CPlusPlus/CPlusPlusLanguage.h"
 #include "Plugins/Language/ObjC/ObjCLanguage.h"
+#include "Plugins/Language/D/DLanguage.h"
 
 #include "llvm/ADT/StringRef.h"    // for StringRef
 #include "llvm/Support/Compiler.h" // for LLVM_PRETT...
@@ -74,6 +75,8 @@ static inline Mangled::ManglingScheme cstring_mangling_scheme(const char *s) {
       return Mangled::eManglingSchemeMSVC;
     if (s[0] == '_' && s[1] == 'Z')
       return Mangled::eManglingSchemeItanium;
+    if (DLanguage::IsDMangledName(s))
+      return Mangled::eManglingSchemeD;
   }
   return Mangled::eManglingSchemeNone;
 }
@@ -322,6 +325,10 @@ Mangled::GetDemangledName(lldb::LanguageType language) const {
         }
         break;
       }
+      case eManglingSchemeD: {
+        demangled_name = DLanguage::demangle(m_mangled);
+        break;
+      }
       case eManglingSchemeNone:
         break;
       }
@@ -431,6 +438,8 @@ lldb::LanguageType Mangled::GuessLanguage() const {
         return lldb::eLanguageTypeC_plus_plus;
       else if (ObjCLanguage::IsPossibleObjCMethodName(mangled_name))
         return lldb::eLanguageTypeObjC;
+      else if (DLanguage::IsDMangledName(mangled_name))
+        return lldb::eLanguageTypeD;
     }
   } else {
     // ObjC names aren't really mangled, so they won't necessarily be in the 
