@@ -3309,6 +3309,9 @@ static constexpr PropertyDefinition g_properties[] = {
     {"auto-import-clang-modules", OptionValue::eTypeBoolean, false, true,
      nullptr, {},
      "Automatically load Clang modules referred to by the program."},
+    {"import-std-value", OptionValue::eTypeBoolean, false, true,
+     nullptr, {},
+     "Import the C++ std module to improve debugging STL containers."},
     {"auto-apply-fixits", OptionValue::eTypeBoolean, false, true, nullptr,
      {}, "Automatically apply fix-it hints to expressions."},
     {"notify-about-fixits", OptionValue::eTypeBoolean, false, true, nullptr,
@@ -3447,6 +3450,7 @@ enum {
   ePropertyDebugFileSearchPaths,
   ePropertyClangModuleSearchPaths,
   ePropertyAutoImportClangModules,
+  ePropertyImportStdModule,
   ePropertyAutoApplyFixIts,
   ePropertyNotifyAboutFixIts,
   ePropertySaveObjects,
@@ -3865,6 +3869,12 @@ FileSpecList &TargetProperties::GetClangModuleSearchPaths() {
 
 bool TargetProperties::GetEnableAutoImportClangModules() const {
   const uint32_t idx = ePropertyAutoImportClangModules;
+  return m_collection_sp->GetPropertyAtIndexAsBoolean(
+      nullptr, idx, g_properties[idx].default_uint_value != 0);
+}
+
+bool TargetProperties::GetEnableImportStdModule() const {
+  const uint32_t idx = ePropertyImportStdModule;
   return m_collection_sp->GetPropertyAtIndexAsBoolean(
       nullptr, idx, g_properties[idx].default_uint_value != 0);
 }

@@ -619,6 +619,9 @@ static void ParseLangArgs(LangOptions &Opts, InputKind IK, const char *triple) {
 
   Opts.WChar = true;
 
+  Opts.Modules = true;
+  Opts.ModulesTS = true;
+
   // OpenCL has some additional defaults.
   if (LangStd == LangStandard::lang_opencl10) {
     Opts.OpenCL = 1;

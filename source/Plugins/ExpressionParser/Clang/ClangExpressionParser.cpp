@@ -6,7 +6,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include <cctype>
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/ASTDiagnostic.h"
 #include "clang/AST/ExternalASTSource.h"
@@ -33,11 +32,17 @@
 #include "clang/Rewrite/Core/Rewriter.h"
 #include "clang/Rewrite/Frontend/FrontendActions.h"
 #include "clang/Sema/CodeCompleteConsumer.h"
+#include "clang/Sema/Lookup.h"
+#include "clang/Sema/MultiplexExternalSemaSource.h"
 #include "clang/Sema/Sema.h"
 #include "clang/Sema/SemaConsumer.h"
+#include <cctype>
+#include <clang/Driver/Driver.h>
+#include <clang/Driver/ToolChain.h>
 
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ExecutionEngine/ExecutionEngine.h"
+#include "llvm/Support/CrashRecoveryContext.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/TargetSelect.h"
@@ -212,6 +217,711 @@ private:
   DiagnosticManager *m_manager = nullptr;
   std::shared_ptr<clang::TextDiagnosticBuffer> m_passthrough;
 };
+
+/// \brief wraps an ExternalASTSource in an ExternalSemaSource. No functional
+/// difference between the original source and this wrapper intended.
+class ExternalASTSourceWrapper : public ExternalSemaSource {
+  ExternalASTSource *m_Source;
+
+public:
+  ExternalASTSourceWrapper(ExternalASTSource *Source) : m_Source(Source) {
+    assert(m_Source && "Can't wrap nullptr ExternalASTSource");
+  }
+
+  virtual Decl *GetExternalDecl(uint32_t ID) override {
+    return m_Source->GetExternalDecl(ID);
+  }
+
+  virtual Selector GetExternalSelector(uint32_t ID) override {
+    return m_Source->GetExternalSelector(ID);
+  }
+
+  virtual uint32_t GetNumExternalSelectors() override {
+    return m_Source->GetNumExternalSelectors();
+  }
+
+  virtual Stmt *GetExternalDeclStmt(uint64_t Offset) override {
+    return m_Source->GetExternalDeclStmt(Offset);
+  }
+
+  virtual CXXCtorInitializer **
+  GetExternalCXXCtorInitializers(uint64_t Offset) override {
+    return m_Source->GetExternalCXXCtorInitializers(Offset);
+  }
+
+  virtual CXXBaseSpecifier *
+  GetExternalCXXBaseSpecifiers(uint64_t Offset) override {
+    return m_Source->GetExternalCXXBaseSpecifiers(Offset);
+  }
+
+  virtual void updateOutOfDateIdentifier(IdentifierInfo &II) override {
+    m_Source->updateOutOfDateIdentifier(II);
+  }
+
+  virtual bool FindExternalVisibleDeclsByName(const DeclContext *DC,
+                                              DeclarationName Name) override {
+    return m_Source->FindExternalVisibleDeclsByName(DC, Name);
+  }
+
+  virtual void completeVisibleDeclsMap(const DeclContext *DC) override {
+    m_Source->completeVisibleDeclsMap(DC);
+  }
+
+  virtual clang::Module *getModule(unsigned ID) override {
+    return m_Source->getModule(ID);
+  }
+
+  virtual llvm::Optional<ASTSourceDescriptor>
+  getSourceDescriptor(unsigned ID) override {
+    return m_Source->getSourceDescriptor(ID);
+  }
+
+  virtual ExtKind hasExternalDefinitions(const Decl *D) override {
+    return m_Source->hasExternalDefinitions(D);
+  }
+
+  virtual void
+  FindExternalLexicalDecls(const DeclContext *DC,
+                           llvm::function_ref<bool(Decl::Kind)> IsKindWeWant,
+                           SmallVectorImpl<Decl *> &Result) override {
+    m_Source->FindExternalLexicalDecls(DC, IsKindWeWant, Result);
+  }
+
+  virtual void FindFileRegionDecls(FileID File, unsigned Offset,
+                                   unsigned Length,
+                                   SmallVectorImpl<Decl *> &Decls) override {
+    m_Source->FindFileRegionDecls(File, Offset, Length, Decls);
+  }
+
+  virtual void CompleteRedeclChain(const Decl *D) override {
+    m_Source->CompleteRedeclChain(D);
+  }
+
+  virtual void CompleteType(TagDecl *Tag) override {
+    m_Source->CompleteType(Tag);
+  }
+
+  virtual void CompleteType(ObjCInterfaceDecl *Class) override {
+    m_Source->CompleteType(Class);
+  }
+
+  virtual void ReadComments() override { m_Source->ReadComments(); }
+
+  virtual void StartedDeserializing() override {
+    m_Source->StartedDeserializing();
+  }
+
+  virtual void FinishedDeserializing() override {
+    m_Source->FinishedDeserializing();
+  }
+
+  virtual void StartTranslationUnit(ASTConsumer *Consumer) override {
+    m_Source->StartTranslationUnit(Consumer);
+  }
+
+  virtual void PrintStats() override { m_Source->PrintStats(); }
+
+  virtual bool layoutRecordType(
+      const RecordDecl *Record, uint64_t &Size, uint64_t &Alignment,
+      llvm::DenseMap<const FieldDecl *, uint64_t> &FieldOffsets,
+      llvm::DenseMap<const CXXRecordDecl *, CharUnits> &BaseOffsets,
+      llvm::DenseMap<const CXXRecordDecl *, CharUnits> &VirtualBaseOffsets)
+      override {
+    return m_Source->layoutRecordType(Record, Size, Alignment, FieldOffsets,
+                                      BaseOffsets, VirtualBaseOffsets);
+  }
+};
+
+namespace {
+
+/// ASTConsumer - This is an abstract interface that should be implemented by
+/// clients that read ASTs.  This abstraction layer allows the client to be
+/// independent of the AST producer (e.g. parser vs AST dump file reader, etc).
+class ASTConsumerForwarder : public clang::SemaConsumer {
+  clang::ASTConsumer *m_c;
+  clang::SemaConsumer *m_sc;
+
+public:
+  ASTConsumerForwarder(clang::ASTConsumer *c) : m_c(c) {
+    m_sc = dyn_cast<clang::SemaConsumer>(m_c);
+  }
+
+  void Initialize(ASTContext &Context) override { m_c->Initialize(Context); }
+
+  bool HandleTopLevelDecl(DeclGroupRef D) override {
+    return m_c->HandleTopLevelDecl(D);
+  }
+
+  void HandleInlineFunctionDefinition(FunctionDecl *D) override {
+    m_c->HandleInlineFunctionDefinition(D);
+  }
+
+  void HandleInterestingDecl(DeclGroupRef D) override {
+    m_c->HandleInterestingDecl(D);
+  }
+
+  void HandleTranslationUnit(ASTContext &Ctx) override {
+    m_c->HandleTranslationUnit(Ctx);
+  }
+
+  void HandleTagDeclDefinition(TagDecl *D) override {
+    m_c->HandleTagDeclDefinition(D);
+  }
+
+  void HandleTagDeclRequiredDefinition(const TagDecl *D) override {
+    m_c->HandleTagDeclRequiredDefinition(D);
+  }
+
+  void HandleCXXImplicitFunctionInstantiation(FunctionDecl *D) override {
+    m_c->HandleCXXImplicitFunctionInstantiation(D);
+  }
+
+  void HandleTopLevelDeclInObjCContainer(DeclGroupRef D) override {
+    m_c->HandleTopLevelDeclInObjCContainer(D);
+  }
+
+  void HandleImplicitImportDecl(ImportDecl *D) override {
+    m_c->HandleImplicitImportDecl(D);
+  }
+
+  void CompleteTentativeDefinition(VarDecl *D) override {
+    m_c->CompleteTentativeDefinition(D);
+  }
+
+  void AssignInheritanceModel(CXXRecordDecl *RD) override {
+    m_c->AssignInheritanceModel(RD);
+  }
+
+  void HandleCXXStaticMemberVarInstantiation(VarDecl *D) override {
+    m_c->HandleCXXStaticMemberVarInstantiation(D);
+  }
+
+  void HandleVTable(CXXRecordDecl *RD) override { m_c->HandleVTable(RD); }
+
+  ASTMutationListener *GetASTMutationListener() override {
+    return m_c->GetASTMutationListener();
+  }
+
+  ASTDeserializationListener *GetASTDeserializationListener() override {
+    return m_c->GetASTDeserializationListener();
+  }
+
+  void PrintStats() override { m_c->PrintStats(); }
+
+  void InitializeSema(Sema &S) override {
+    if (m_sc)
+      m_sc->InitializeSema(S);
+  }
+
+  /// Inform the semantic consumer that Sema is no longer available.
+  void ForgetSema() override {
+    if (m_sc)
+      m_sc->ForgetSema();
+  }
+
+  bool shouldSkipFunctionBody(Decl *D) override {
+    return m_c->shouldSkipFunctionBody(D);
+  }
+};
+} // namespace
+
+namespace {
+
+/// An abstract interface that should be implemented by
+/// external AST sources that also provide information for semantic
+/// analysis.
+class MyMultiplexExternalSemaSource : public ExternalSemaSource {
+
+private:
+  SmallVector<ExternalSemaSource *, 2> Sources; // doesn't own them.
+
+public:
+  /// Constructs a new multiplexing external sema source and appends the
+  /// given element to it.
+  ///
+  ///\param[in] s1 - A non-null (old) ExternalSemaSource.
+  ///\param[in] s2 - A non-null (new) ExternalSemaSource.
+  ///
+  MyMultiplexExternalSemaSource(ExternalSemaSource &s1,
+                                ExternalSemaSource &s2) {
+    Sources.push_back(&s1);
+    Sources.push_back(&s2);
+  }
+
+  ~MyMultiplexExternalSemaSource() override {}
+
+  /// Appends new source to the source list.
+  ///
+  ///\param[in] source - An ExternalSemaSource.
+  ///
+  void addSource(ExternalSemaSource &source) { Sources.push_back(&source); }
+
+  //===--------------------------------------------------------------------===//
+  // ExternalASTSource.
+  //===--------------------------------------------------------------------===//
+
+  /// Resolve a declaration ID into a declaration, potentially
+  /// building a new declaration.
+  Decl *GetExternalDecl(uint32_t ID) override {
+    for (size_t i = 0; i < Sources.size(); ++i)
+      if (Decl *Result = Sources[i]->GetExternalDecl(ID))
+        return Result;
+    return nullptr;
+  }
+
+  /// Complete the redeclaration chain if it's been extended since the
+  /// previous generation of the AST source.
+  void CompleteRedeclChain(const Decl *D) override {
+    for (size_t i = 0; i < Sources.size(); ++i)
+      Sources[i]->CompleteRedeclChain(D);
+  }
+
+  /// Resolve a selector ID into a selector.
+  Selector GetExternalSelector(uint32_t ID) override {
+    Selector Sel;
+    for (size_t i = 0; i < Sources.size(); ++i) {
+      Sel = Sources[i]->GetExternalSelector(ID);
+      if (!Sel.isNull())
+        return Sel;
+    }
+    return Sel;
+  }
+
+  /// Returns the number of selectors known to the external AST
+  /// source.
+  uint32_t GetNumExternalSelectors() override {
+    uint32_t total = 0;
+    for (size_t i = 0; i < Sources.size(); ++i)
+      total += Sources[i]->GetNumExternalSelectors();
+    return total;
+  }
+
+  /// Resolve the offset of a statement in the decl stream into
+  /// a statement.
+  Stmt *GetExternalDeclStmt(uint64_t Offset) override {
+    for (size_t i = 0; i < Sources.size(); ++i)
+      if (Stmt *Result = Sources[i]->GetExternalDeclStmt(Offset))
+        return Result;
+    return nullptr;
+  }
+
+  /// Resolve the offset of a set of C++ base specifiers in the decl
+  /// stream into an array of specifiers.
+  CXXBaseSpecifier *GetExternalCXXBaseSpecifiers(uint64_t Offset) override {
+    for (size_t i = 0; i < Sources.size(); ++i)
+      if (CXXBaseSpecifier *R =
+              Sources[i]->GetExternalCXXBaseSpecifiers(Offset))
+        return R;
+    return nullptr;
+  }
+
+  /// Resolve a handle to a list of ctor initializers into the list of
+  /// initializers themselves.
+  CXXCtorInitializer **
+  GetExternalCXXCtorInitializers(uint64_t Offset) override {
+    for (auto *S : Sources)
+      if (auto *R = S->GetExternalCXXCtorInitializers(Offset))
+        return R;
+    return nullptr;
+  }
+
+  ExtKind hasExternalDefinitions(const Decl *D) override {
+    for (const auto &S : Sources)
+      if (auto EK = S->hasExternalDefinitions(D))
+        if (EK != EK_ReplyHazy)
+          return EK;
+    return EK_ReplyHazy;
+  }
+
+  /// Find all declarations with the given name in the
+  /// given context.
+  bool FindExternalVisibleDeclsByName(const DeclContext *DC,
+                                      DeclarationName Name) override {
+    // bool AnyDeclsFound = false;
+    for (size_t i = 0; i < Sources.size(); ++i)
+      if (Sources[i]->FindExternalVisibleDeclsByName(DC, Name))
+        return true;
+    return false;
+  }
+
+  /// Ensures that the table of all visible declarations inside this
+  /// context is up to date.
+  void completeVisibleDeclsMap(const DeclContext *DC) override {
+    for (size_t i = 0; i < Sources.size(); ++i)
+      Sources[i]->completeVisibleDeclsMap(DC);
+  }
+
+  /// Finds all declarations lexically contained within the given
+  /// DeclContext, after applying an optional filter predicate.
+  ///
+  /// \param IsKindWeWant a predicate function that returns true if the passed
+  /// declaration kind is one we are looking for.
+  void
+  FindExternalLexicalDecls(const DeclContext *DC,
+                           llvm::function_ref<bool(Decl::Kind)> IsKindWeWant,
+                           SmallVectorImpl<Decl *> &Result) override {
+    for (size_t i = 0; i < Sources.size(); ++i)
+      Sources[i]->FindExternalLexicalDecls(DC, IsKindWeWant, Result);
+  }
+
+  /// Get the decls that are contained in a file in the Offset/Length
+  /// range. \p Length can be 0 to indicate a point at \p Offset instead of
+  /// a range.
+  void FindFileRegionDecls(FileID File, unsigned Offset, unsigned Length,
+                           SmallVectorImpl<Decl *> &Decls) override {
+    for (size_t i = 0; i < Sources.size(); ++i)
+      Sources[i]->FindFileRegionDecls(File, Offset, Length, Decls);
+  }
+
+  /// Gives the external AST source an opportunity to complete
+  /// an incomplete type.
+  void CompleteType(TagDecl *Tag) override {
+    for (size_t i = 0; i < Sources.size(); ++i)
+      while (!Tag->isCompleteDefinition())
+        Sources[i]->CompleteType(Tag);
+  }
+
+  /// Gives the external AST source an opportunity to complete an
+  /// incomplete Objective-C class.
+  ///
+  /// This routine will only be invoked if the "externally completed" bit is
+  /// set on the ObjCInterfaceDecl via the function
+  /// \c ObjCInterfaceDecl::setExternallyCompleted().
+  void CompleteType(ObjCInterfaceDecl *Class) override {
+    for (size_t i = 0; i < Sources.size(); ++i)
+      Sources[i]->CompleteType(Class);
+  }
+
+  /// Loads comment ranges.
+  void ReadComments() override {
+    for (size_t i = 0; i < Sources.size(); ++i)
+      Sources[i]->ReadComments();
+  }
+
+  /// Notify ExternalASTSource that we started deserialization of
+  /// a decl or type so until FinishedDeserializing is called there may be
+  /// decls that are initializing. Must be paired with FinishedDeserializing.
+  void StartedDeserializing() override {
+    for (size_t i = 0; i < Sources.size(); ++i)
+      Sources[i]->StartedDeserializing();
+  }
+
+  /// Notify ExternalASTSource that we finished the deserialization of
+  /// a decl or type. Must be paired with StartedDeserializing.
+  void FinishedDeserializing() override {
+    for (size_t i = 0; i < Sources.size(); ++i)
+      Sources[i]->FinishedDeserializing();
+  }
+
+  /// Function that will be invoked when we begin parsing a new
+  /// translation unit involving this external AST source.
+  void StartTranslationUnit(ASTConsumer *Consumer) override {
+    for (size_t i = 0; i < Sources.size(); ++i)
+      Sources[i]->StartTranslationUnit(Consumer);
+  }
+
+  /// Print any statistics that have been gathered regarding
+  /// the external AST source.
+  void PrintStats() override {
+    for (size_t i = 0; i < Sources.size(); ++i)
+      Sources[i]->PrintStats();
+  }
+
+  /// Retrieve the module that corresponds to the given module ID.
+  clang::Module *getModule(unsigned ID) override {
+    for (size_t i = 0; i < Sources.size(); ++i)
+      if (auto M = Sources[i]->getModule(ID))
+        return M;
+    return nullptr;
+  }
+
+  bool DeclIsFromPCHWithObjectFile(const Decl *D) override {
+    for (auto *S : Sources)
+      if (S->DeclIsFromPCHWithObjectFile(D))
+        return true;
+    return false;
+  }
+
+  /// Perform layout on the given record.
+  ///
+  /// This routine allows the external AST source to provide an specific
+  /// layout for a record, overriding the layout that would normally be
+  /// constructed. It is intended for clients who receive specific layout
+  /// details rather than source code (such as LLDB). The client is expected
+  /// to fill in the field offsets, base offsets, virtual base offsets, and
+  /// complete object size.
+  ///
+  /// \param Record The record whose layout is being requested.
+  ///
+  /// \param Size The final size of the record, in bits.
+  ///
+  /// \param Alignment The final alignment of the record, in bits.
+  ///
+  /// \param FieldOffsets The offset of each of the fields within the record,
+  /// expressed in bits. All of the fields must be provided with offsets.
+  ///
+  /// \param BaseOffsets The offset of each of the direct, non-virtual base
+  /// classes. If any bases are not given offsets, the bases will be laid
+  /// out according to the ABI.
+  ///
+  /// \param VirtualBaseOffsets The offset of each of the virtual base classes
+  /// (either direct or not). If any bases are not given offsets, the bases will
+  /// be laid out according to the ABI.
+  ///
+  /// \returns true if the record layout was provided, false otherwise.
+  bool layoutRecordType(
+      const RecordDecl *Record, uint64_t &Size, uint64_t &Alignment,
+      llvm::DenseMap<const FieldDecl *, uint64_t> &FieldOffsets,
+      llvm::DenseMap<const CXXRecordDecl *, CharUnits> &BaseOffsets,
+      llvm::DenseMap<const CXXRecordDecl *, CharUnits> &VirtualBaseOffsets)
+      override {
+    for (size_t i = 0; i < Sources.size(); ++i)
+      if (Sources[i]->layoutRecordType(Record, Size, Alignment, FieldOffsets,
+                                       BaseOffsets, VirtualBaseOffsets))
+        return true;
+    return false;
+  }
+
+  /// Return the amount of memory used by memory buffers, breaking down
+  /// by heap-backed versus mmap'ed memory.
+  void getMemoryBufferSizes(MemoryBufferSizes &sizes) const override {
+    for (size_t i = 0; i < Sources.size(); ++i)
+      Sources[i]->getMemoryBufferSizes(sizes);
+  }
+
+  //===--------------------------------------------------------------------===//
+  // ExternalSemaSource.
+  //===--------------------------------------------------------------------===//
+
+  /// Initialize the semantic source with the Sema instance
+  /// being used to perform semantic analysis on the abstract syntax
+  /// tree.
+  void InitializeSema(Sema &S) override {
+    for (size_t i = 0; i < Sources.size(); ++i)
+      Sources[i]->InitializeSema(S);
+  }
+
+  /// Inform the semantic consumer that Sema is no longer available.
+  void ForgetSema() override {
+    for (size_t i = 0; i < Sources.size(); ++i)
+      Sources[i]->ForgetSema();
+  }
+
+  /// Load the contents of the global method pool for a given
+  /// selector.
+  void ReadMethodPool(Selector Sel) override {
+    for (size_t i = 0; i < Sources.size(); ++i)
+      Sources[i]->ReadMethodPool(Sel);
+  }
+
+  /// Load the contents of the global method pool for a given
+  /// selector if necessary.
+  void updateOutOfDateSelector(Selector Sel) override {
+    for (size_t i = 0; i < Sources.size(); ++i)
+      Sources[i]->updateOutOfDateSelector(Sel);
+  }
+
+  /// Load the set of namespaces that are known to the external source,
+  /// which will be used during typo correction.
+  void
+  ReadKnownNamespaces(SmallVectorImpl<NamespaceDecl *> &Namespaces) override {
+    for (size_t i = 0; i < Sources.size(); ++i)
+      Sources[i]->ReadKnownNamespaces(Namespaces);
+  }
+
+  /// Load the set of used but not defined functions or variables with
+  /// internal linkage, or used but not defined inline functions.
+  void ReadUndefinedButUsed(
+      llvm::MapVector<NamedDecl *, SourceLocation> &Undefined) override {
+    for (size_t i = 0; i < Sources.size(); ++i)
+      Sources[i]->ReadUndefinedButUsed(Undefined);
+  }
+
+  void ReadMismatchingDeleteExpressions(
+      llvm::MapVector<FieldDecl *,
+                      llvm::SmallVector<std::pair<SourceLocation, bool>, 4>>
+          &Exprs) override {
+    for (auto &Source : Sources)
+      Source->ReadMismatchingDeleteExpressions(Exprs);
+  }
+
+  /// Do last resort, unqualified lookup on a LookupResult that
+  /// Sema cannot find.
+  ///
+  /// \param R a LookupResult that is being recovered.
+  ///
+  /// \param S the Scope of the identifier occurrence.
+  ///
+  /// \return true to tell Sema to recover using the LookupResult.
+  bool LookupUnqualified(LookupResult &R, Scope *S) override {
+    for (size_t i = 0; i < Sources.size(); ++i)
+      Sources[i]->LookupUnqualified(R, S);
+
+    return !R.empty();
+  }
+
+  /// Read the set of tentative definitions known to the external Sema
+  /// source.
+  ///
+  /// The external source should append its own tentative definitions to the
+  /// given vector of tentative definitions. Note that this routine may be
+  /// invoked multiple times; the external source should take care not to
+  /// introduce the same declarations repeatedly.
+  void ReadTentativeDefinitions(SmallVectorImpl<VarDecl *> &Defs) override {
+    for (size_t i = 0; i < Sources.size(); ++i)
+      Sources[i]->ReadTentativeDefinitions(Defs);
+  }
+
+  /// Read the set of unused file-scope declarations known to the
+  /// external Sema source.
+  ///
+  /// The external source should append its own unused, filed-scope to the
+  /// given vector of declarations. Note that this routine may be
+  /// invoked multiple times; the external source should take care not to
+  /// introduce the same declarations repeatedly.
+  void ReadUnusedFileScopedDecls(
+      SmallVectorImpl<const DeclaratorDecl *> &Decls) override {
+    for (size_t i = 0; i < Sources.size(); ++i)
+      Sources[i]->ReadUnusedFileScopedDecls(Decls);
+  }
+
+  /// Read the set of delegating constructors known to the
+  /// external Sema source.
+  ///
+  /// The external source should append its own delegating constructors to the
+  /// given vector of declarations. Note that this routine may be
+  /// invoked multiple times; the external source should take care not to
+  /// introduce the same declarations repeatedly.
+  void ReadDelegatingConstructors(
+      SmallVectorImpl<CXXConstructorDecl *> &Decls) override {
+    for (size_t i = 0; i < Sources.size(); ++i)
+      Sources[i]->ReadDelegatingConstructors(Decls);
+  }
+
+  /// Read the set of ext_vector type declarations known to the
+  /// external Sema source.
+  ///
+  /// The external source should append its own ext_vector type declarations to
+  /// the given vector of declarations. Note that this routine may be
+  /// invoked multiple times; the external source should take care not to
+  /// introduce the same declarations repeatedly.
+  void ReadExtVectorDecls(SmallVectorImpl<TypedefNameDecl *> &Decls) override {
+    for (size_t i = 0; i < Sources.size(); ++i)
+      Sources[i]->ReadExtVectorDecls(Decls);
+  }
+
+  /// Read the set of potentially unused typedefs known to the source.
+  ///
+  /// The external source should append its own potentially unused local
+  /// typedefs to the given vector of declarations. Note that this routine may
+  /// be invoked multiple times; the external source should take care not to
+  /// introduce the same declarations repeatedly.
+  void ReadUnusedLocalTypedefNameCandidates(
+      llvm::SmallSetVector<const TypedefNameDecl *, 4> &Decls) override {
+    for (size_t i = 0; i < Sources.size(); ++i)
+      Sources[i]->ReadUnusedLocalTypedefNameCandidates(Decls);
+  }
+
+  /// Read the set of referenced selectors known to the
+  /// external Sema source.
+  ///
+  /// The external source should append its own referenced selectors to the
+  /// given vector of selectors. Note that this routine
+  /// may be invoked multiple times; the external source should take care not
+  /// to introduce the same selectors repeatedly.
+  void ReadReferencedSelectors(
+      SmallVectorImpl<std::pair<Selector, SourceLocation>> &Sels) override {
+    for (size_t i = 0; i < Sources.size(); ++i)
+      Sources[i]->ReadReferencedSelectors(Sels);
+  }
+
+  /// Read the set of weak, undeclared identifiers known to the
+  /// external Sema source.
+  ///
+  /// The external source should append its own weak, undeclared identifiers to
+  /// the given vector. Note that this routine may be invoked multiple times;
+  /// the external source should take care not to introduce the same identifiers
+  /// repeatedly.
+  void ReadWeakUndeclaredIdentifiers(
+      SmallVectorImpl<std::pair<IdentifierInfo *, WeakInfo>> &WI) override {
+    for (size_t i = 0; i < Sources.size(); ++i)
+      Sources[i]->ReadWeakUndeclaredIdentifiers(WI);
+  }
+
+  /// Read the set of used vtables known to the external Sema source.
+  ///
+  /// The external source should append its own used vtables to the given
+  /// vector. Note that this routine may be invoked multiple times; the external
+  /// source should take care not to introduce the same vtables repeatedly.
+  void ReadUsedVTables(SmallVectorImpl<ExternalVTableUse> &VTables) override {
+    for (size_t i = 0; i < Sources.size(); ++i)
+      Sources[i]->ReadUsedVTables(VTables);
+  }
+
+  /// Read the set of pending instantiations known to the external
+  /// Sema source.
+  ///
+  /// The external source should append its own pending instantiations to the
+  /// given vector. Note that this routine may be invoked multiple times; the
+  /// external source should take care not to introduce the same instantiations
+  /// repeatedly.
+  void ReadPendingInstantiations(
+      SmallVectorImpl<std::pair<ValueDecl *, SourceLocation>> &Pending)
+      override {
+    for (size_t i = 0; i < Sources.size(); ++i)
+      Sources[i]->ReadPendingInstantiations(Pending);
+  }
+
+  /// Read the set of late parsed template functions for this source.
+  ///
+  /// The external source should insert its own late parsed template functions
+  /// into the map. Note that this routine may be invoked multiple times; the
+  /// external source should take care not to introduce the same map entries
+  /// repeatedly.
+  void ReadLateParsedTemplates(
+      llvm::MapVector<const FunctionDecl *, std::unique_ptr<LateParsedTemplate>>
+          &LPTMap) override {
+    for (size_t i = 0; i < Sources.size(); ++i)
+      Sources[i]->ReadLateParsedTemplates(LPTMap);
+  }
+
+  /// \copydoc ExternalSemaSource::CorrectTypo
+  /// \note Returns the first nonempty correction.
+  TypoCorrection CorrectTypo(const DeclarationNameInfo &Typo, int LookupKind,
+                             Scope *S, CXXScopeSpec *SS,
+                             CorrectionCandidateCallback &CCC,
+                             DeclContext *MemberContext, bool EnteringContext,
+                             const ObjCObjectPointerType *OPT) override {
+    for (size_t I = 0, E = Sources.size(); I < E; ++I) {
+      if (TypoCorrection C =
+              Sources[I]->CorrectTypo(Typo, LookupKind, S, SS, CCC,
+                                      MemberContext, EnteringContext, OPT))
+        return C;
+    }
+    return TypoCorrection();
+  }
+
+  /// Produces a diagnostic note if one of the attached sources
+  /// contains a complete definition for \p T. Queries the sources in list
+  /// order until the first one claims that a diagnostic was produced.
+  ///
+  /// \param Loc the location at which a complete type was required but not
+  /// provided
+  ///
+  /// \param T the \c QualType that should have been complete at \p Loc
+  ///
+  /// \return true if a diagnostic was produced, false otherwise.
+  bool MaybeDiagnoseMissingCompleteType(SourceLocation Loc,
+                                        QualType T) override {
+    for (size_t I = 0, E = Sources.size(); I < E; ++I) {
+      if (Sources[I]->MaybeDiagnoseMissingCompleteType(Loc, T))
+        return true;
+    }
+    return false;
+  }
+};
+
+} // namespace
 
 //===----------------------------------------------------------------------===//
 // Implementation of ClangExpressionParser
@@ -412,6 +1122,45 @@ ClangExpressionParser::ClangExpressionParser(ExecutionContextScope *exe_scope,
     break;
   }
 
+  lang_opts.Modules = true;
+  lang_opts.ObjC = true;
+  lang_opts.CPlusPlus = true;
+  lang_opts.GNUMode = true;
+  lang_opts.GNUKeywords = true;
+  lang_opts.DoubleSquareBracketAttributes = true;
+  lang_opts.CPlusPlus11 = true;
+  lang_opts.ImplicitModules = true;
+  lang_opts.ModulesLocalVisibility = true;
+
+  if (false) {
+    m_compiler->getHeaderSearchOpts().AddPath(
+        "/usr/include/c++/8.2.1/", clang::frontend::IncludeDirGroup::System,
+        false, true);
+
+    m_compiler->getHeaderSearchOpts().AddPath(
+        "/usr/include/c++/8.2.1/x86_64-pc-linux-gnu/",
+        clang::frontend::IncludeDirGroup::System, false, true);
+  } else {
+    m_compiler->getHeaderSearchOpts().UseLibcxx = true;
+    m_compiler->getHeaderSearchOpts().AddPath(
+        "/usr/include/c++/v1/", clang::frontend::IncludeDirGroup::System, false,
+        true);
+  }
+  m_compiler->getHeaderSearchOpts().ModuleCachePath =
+      "/tmp/org.llvm.lldb.cache/";
+  m_compiler->getHeaderSearchOpts().ImplicitModuleMaps = true;
+
+  m_compiler->getHeaderSearchOpts().ResourceDir =
+      "/home/teemperor/.llvm/rel-build/lib/clang/9.0.0/include";
+
+  m_compiler->getHeaderSearchOpts().AddPath(
+      "/home/teemperor/.llvm/rel-build/lib/clang/9.0.0/include",
+      clang::frontend::IncludeDirGroup::System, false, true);
+
+  m_compiler->getHeaderSearchOpts().AddPath(
+      "/usr/include/", clang::frontend::IncludeDirGroup::ExternCSystem, false,
+      true);
+
   lang_opts.Bool = true;
   lang_opts.WChar = true;
   lang_opts.Blocks = true;
@@ -513,7 +1262,7 @@ ClangExpressionParser::ClangExpressionParser(ExecutionContextScope *exe_scope,
   m_compiler->createASTContext();
   clang::ASTContext &ast_context = m_compiler->getASTContext();
 
-  ClangExpressionHelper *type_system_helper =
+  /*ClangExpressionHelper *type_system_helper =
       dyn_cast<ClangExpressionHelper>(m_expr.GetTypeSystemHelper());
   ClangExpressionDeclMap *decl_map = type_system_helper->DeclMap();
 
@@ -522,7 +1271,7 @@ ClangExpressionParser::ClangExpressionParser(ExecutionContextScope *exe_scope,
         decl_map->CreateProxy());
     decl_map->InstallASTContext(ast_context, m_compiler->getFileManager());
     ast_context.setExternalSource(ast_source);
-  }
+  }*/
 
   m_ast_context.reset(
       new ClangASTContext(m_compiler->getTargetOpts().Triple.c_str()));
@@ -865,12 +1614,6 @@ ClangExpressionParser::ParseInternal(DiagnosticManager &diagnostic_manager,
   ClangExpressionHelper *type_system_helper =
       dyn_cast<ClangExpressionHelper>(m_expr.GetTypeSystemHelper());
 
-  ASTConsumer *ast_transformer =
-      type_system_helper->ASTTransformer(m_code_generator.get());
-
-  if (ClangExpressionDeclMap *decl_map = type_system_helper->DeclMap())
-    decl_map->InstallCodeGenerator(m_code_generator.get());
-
   // If we want to parse for code completion, we need to attach our code
   // completion consumer to the Sema and specify a completion position.
   // While parsing the Sema will call this consumer with the provided
@@ -885,16 +1628,50 @@ ClangExpressionParser::ParseInternal(DiagnosticManager &diagnostic_manager,
     PP.SetCodeCompletionPoint(main_file, completion_line, completion_column);
   }
 
+  ASTConsumer *ast_transformer =
+      type_system_helper->ASTTransformer(m_code_generator.get());
+
+  std::unique_ptr<clang::ASTConsumer> Consumer;
   if (ast_transformer) {
-    ast_transformer->Initialize(m_compiler->getASTContext());
-    ParseAST(m_compiler->getPreprocessor(), ast_transformer,
-             m_compiler->getASTContext(), false, TU_Complete,
-             completion_consumer);
+    Consumer.reset(new ASTConsumerForwarder(ast_transformer));
   } else {
-    m_code_generator->Initialize(m_compiler->getASTContext());
-    ParseAST(m_compiler->getPreprocessor(), m_code_generator.get(),
-             m_compiler->getASTContext(), false, TU_Complete,
-             completion_consumer);
+    Consumer.reset(new ASTConsumerForwarder(m_code_generator.get()));
+  }
+
+  clang::ASTContext &ast_context = m_compiler->getASTContext();
+
+  m_compiler->setSema(new Sema(m_compiler->getPreprocessor(), ast_context,
+                               *Consumer, TU_Complete, nullptr));
+  m_compiler->setASTConsumer(std::move(Consumer));
+  m_compiler->createModuleManager();
+
+  ClangExpressionDeclMap *decl_map = type_system_helper->DeclMap();
+  if (decl_map) {
+    decl_map->InstallCodeGenerator(&m_compiler->getASTConsumer());
+
+    auto wrapper =
+        new ExternalASTSourceWrapper(ast_context.getExternalSource());
+
+    clang::ExternalASTSource *ast_source = decl_map->CreateProxy();
+    auto wrapper2 = new ExternalASTSourceWrapper(ast_source);
+
+    auto multiplexer = new MyMultiplexExternalSemaSource(*wrapper, *wrapper2);
+    IntrusiveRefCntPtr<ExternalASTSource> Source(multiplexer);
+    ast_context.setExternalSource(Source);
+
+    decl_map->InstallASTContext(ast_context, m_compiler->getFileManager());
+  }
+
+  assert(m_compiler->getASTContext().getExternalSource() &&
+         "Sema doesn't know about the ASTReader for modules?");
+  assert(m_compiler->getSema().getExternalSource() &&
+         "Sema doesn't know about the ASTReader for modules?");
+
+  {
+    llvm::CrashRecoveryContextCleanupRegistrar<Sema> CleanupSema(
+        &m_compiler->getSema());
+    ParseAST(m_compiler->getSema(), false, false);
+    m_compiler->setSema(nullptr);
   }
 
   diag_buf->EndSourceFile();
