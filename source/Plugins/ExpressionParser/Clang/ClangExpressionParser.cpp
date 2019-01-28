@@ -560,8 +560,11 @@ public:
   FindExternalLexicalDecls(const DeclContext *DC,
                            llvm::function_ref<bool(Decl::Kind)> IsKindWeWant,
                            SmallVectorImpl<Decl *> &Result) override {
-    for (size_t i = 0; i < Sources.size(); ++i)
+    for (size_t i = 0; i < Sources.size(); ++i) {
       Sources[i]->FindExternalLexicalDecls(DC, IsKindWeWant, Result);
+      if (!Result.empty())
+        return;
+    }
   }
 
   /// Get the decls that are contained in a file in the Offset/Length
@@ -754,8 +757,11 @@ public:
   ///
   /// \return true to tell Sema to recover using the LookupResult.
   bool LookupUnqualified(LookupResult &R, Scope *S) override {
-    for (size_t i = 0; i < Sources.size(); ++i)
+    for (size_t i = 0; i < Sources.size(); ++i) {
       Sources[i]->LookupUnqualified(R, S);
+      if (!R.empty())
+        break;
+    }
 
     return !R.empty();
   }
