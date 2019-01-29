@@ -1136,7 +1136,19 @@ ClangExpressionParser::ClangExpressionParser(ExecutionContextScope *exe_scope,
   lang_opts.DoubleSquareBracketAttributes = true;
   lang_opts.CPlusPlus11 = true;
   lang_opts.ImplicitModules = true;
-  lang_opts.ModulesLocalVisibility = true;
+  lang_opts.ModulesLocalVisibility = false;
+
+  clang::driver::Driver driver("clang", m_compiler->getTargetOpts().Triple,
+                               m_compiler->getDiagnostics());
+
+  std::unique_ptr<llvm::opt::InputArgList> UArgs =
+      llvm::make_unique<llvm::opt::InputArgList>();
+
+  // Perform the default argument translations.
+ // clang::driver::DerivedArgList *TranslatedArgs = driver.TranslateInputArgs(*UArgs);
+
+  // Owned by the host.
+  //const clang::driver::ToolChain &TC = driver.getToolChain(*UArgs, m_compiler->getTargetOpts().Triple);
 
   if (false) {
     m_compiler->getHeaderSearchOpts().AddPath(
