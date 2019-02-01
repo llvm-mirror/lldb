@@ -403,6 +403,16 @@ const std::vector<ConstString> &CompileUnit::GetImportedModules() {
   return m_imported_modules;
 }
 
+const std::vector<ConstString> &CompileUnit::GetIncludeDirectories() {
+  if (m_include_directories.empty() &&
+      m_flags.IsClear(flagsParsedIncludeDirectories)) {
+    m_flags.Set(flagsParsedIncludeDirectories);
+    if (SymbolVendor *symbol_vendor = GetModule()->GetSymbolVendor())
+      symbol_vendor->ParseIncludeDirectories(*this, m_include_directories);
+  }
+  return m_include_directories;
+}
+
 FileSpecList &CompileUnit::GetSupportFiles() {
   if (m_support_files.GetSize() == 0) {
     if (m_flags.IsClear(flagsParsedSupportFiles)) {

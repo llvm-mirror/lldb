@@ -1,4 +1,4 @@
-//===-- SymbolFileDWARF.cpp ------------------------------------*- C++ -*-===//
+﻿//===-- SymbolFileDWARF.cpp ------------------------------------*- C++ -*-===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -944,6 +944,36 @@ bool SymbolFileDWARF::ParseImportedModules(
           imported_modules.push_back(pair.first);
         }
       }
+    }
+  }
+  return false;
+}
+
+bool SymbolFileDWARF::ParseIncludeDirectories(CompileUnit &comp_unit,
+                                              std::vector<ConstString> &dirs) {
+  ASSERT_MODULE_LOCK(this);
+  DWARFUnit *dwarf_cu = GetDWARFCompileUnit(&comp_unit);
+  if (dwarf_cu) {
+    const DWARFBaseDIE cu_die = dwarf_cu->GetUnitDIEOnly();
+
+    if (cu_die) {
+      const dw_offset_t stmt_list = cu_die.GetAttributeValueAsUnsigned(
+          DW_AT_stmt_list, DW_INVALID_OFFSET);
+
+      lldb::offset_t offset = stmt_list;
+      DWARFDebugLine::Prologue prologue;
+      if (!DWARFDebugLine::ParsePrologue(get_debug_line_data(), &offset, &prologue, dwarf_cu)) {
+        Host::SystemLog(Host::eSystemLogError, "error: parsing line table prologue "
+                                               "at 0x%8.8x (parsing ended around "
+                                               "0x%8.8" PRIx64 "\n",
+                        stmt_list, offset);
+        return false;
+      }
+
+      dirs.reserve(prologue.include_directories.size());
+      for (auto &include_dir : prologue.include_directories)
+        dirs.emplace_back(include_dir);
+      return true;
     }
   }
   return false;

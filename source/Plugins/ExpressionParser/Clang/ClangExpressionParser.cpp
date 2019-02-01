@@ -79,7 +79,10 @@
 #include "lldb/Expression/IRInterpreter.h"
 #include "lldb/Host/File.h"
 #include "lldb/Host/HostInfo.h"
+#include "lldb/Symbol/Block.h"
 #include "lldb/Symbol/ClangASTContext.h"
+#include "lldb/Symbol/CompileUnit.h"
+#include "lldb/Symbol/LineTable.h"
 #include "lldb/Symbol/SymbolVendor.h"
 #include "lldb/Target/ExecutionContext.h"
 #include "lldb/Target/Language.h"
@@ -991,6 +994,15 @@ ClangExpressionParser::ClangExpressionParser(ExecutionContextScope *exe_scope,
     if (log)
       log->Printf("Frame has language of type %s",
                   Language::GetNameForLanguageType(frame_lang));
+  }
+
+
+  SymbolContext sc;
+
+  if (frame_sp) {
+    sc = frame_sp->GetSymbolContext(lldb::eSymbolContextEverything);
+  } else if (lldb::TargetSP target_sp = exe_scope->CalculateTarget()) {
+    sc.target_sp = target_sp;
   }
 
   // 2. Configure the compiler with a set of default options that are

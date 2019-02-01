@@ -127,6 +127,10 @@ public:
       const lldb_private::SymbolContext &sc,
       std::vector<lldb_private::ConstString> &imported_modules) override;
 
+
+  bool ParseIncludeDirectories(lldb_private::CompileUnit &comp_unit,
+                               std::vector<lldb_private::ConstString> &dirs) override;
+
   size_t ParseBlocksRecursive(lldb_private::Function &func) override;
 
   size_t

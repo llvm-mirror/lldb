@@ -268,6 +268,8 @@ public:
   //------------------------------------------------------------------
   const std::vector<ConstString> &GetImportedModules();
 
+  const std::vector<ConstString> &GetIncludeDirectories();
+
   //------------------------------------------------------------------
   /// Get the SymbolFile plug-in user data.
   ///
@@ -426,6 +428,7 @@ protected:
                                                ///current module, imported by
                                                ///this
                                                ///< compile unit.
+  std::vector<ConstString> m_include_directories;
   FileSpecList m_support_files; ///< Files associated with this compile unit's
                                 ///line table and declarations.
   std::unique_ptr<LineTable>
@@ -450,8 +453,10 @@ private:
     flagsParsedLanguage = (1u << 4), ///< Have we parsed the language already?
     flagsParsedImportedModules =
         (1u << 5), ///< Have we parsed the imported modules already?
+    flagsParsedIncludeDirectories =
+        (1u << 6), ///< Have we parsed the include directories already?
     flagsParsedDebugMacros =
-        (1u << 6) ///< Have we parsed the debug macros already?
+        (1u << 7) ///< Have we parsed the debug macros already?
   };
 
   DISALLOW_COPY_AND_ASSIGN(CompileUnit);

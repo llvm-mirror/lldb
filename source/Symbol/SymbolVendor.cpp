@@ -195,6 +195,17 @@ bool SymbolVendor::ParseImportedModules(
   return false;
 }
 
+bool SymbolVendor::ParseIncludeDirectories(CompileUnit &comp_unit,
+                                           std::vector<ConstString> &dirs) {
+  ModuleSP module_sp(GetModule());
+  if (module_sp) {
+    std::lock_guard<std::recursive_mutex> guard(module_sp->GetMutex());
+    if (m_sym_file_ap.get())
+      return m_sym_file_ap->ParseIncludeDirectories(comp_unit, dirs);
+  }
+  return false;
+}
+
 size_t SymbolVendor::ParseBlocksRecursive(Function &func) {
   ModuleSP module_sp(GetModule());
   if (module_sp) {

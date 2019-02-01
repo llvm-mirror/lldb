@@ -210,7 +210,8 @@ bool ExpressionSourceCode::GetText(std::string &text,
         modules_for_macros.push_back(module);
       }
 
-      if (target->GetEnableAutoImportClangModules()) {
+      llvm::errs() << "FSDF:\n";
+      if (true || target->GetEnableAutoImportClangModules()) {
         if (StackFrame *frame = exe_ctx.GetFramePtr()) {
           if (Block *block = frame->GetFrameBlock()) {
             SymbolContext sc;
@@ -219,6 +220,13 @@ bool ExpressionSourceCode::GetText(std::string &text,
 
             if (sc.comp_unit) {
               StreamString error_stream;
+
+              llvm::errs() << "SC:\n";
+              auto dirs = sc.comp_unit->GetIncludeDirectories();
+              llvm::errs() << "DIRECTORIES:\n";
+              for (auto &dir : dirs) {
+                llvm::errs() << " DIR: " << dir.GetStringRef().str() << "\n";
+              }
 
               decl_vendor->AddModulesForCompileUnit(
                   *sc.comp_unit, modules_for_macros, error_stream);

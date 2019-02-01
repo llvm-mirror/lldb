@@ -63,6 +63,9 @@ public:
   virtual bool ParseImportedModules(const SymbolContext &sc,
                                     std::vector<ConstString> &imported_modules);
 
+  virtual bool ParseIncludeDirectories(lldb_private::CompileUnit &comp_unit,
+                                       std::vector<ConstString> &dirs);
+
   virtual size_t ParseBlocksRecursive(Function &func);
 
   virtual size_t ParseVariablesForContext(const SymbolContext &sc);

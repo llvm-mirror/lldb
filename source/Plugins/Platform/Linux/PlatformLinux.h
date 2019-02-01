@@ -52,6 +52,8 @@ public:
 
   bool CanDebugProcess() override;
 
+  bool SupportsModules() override { return true; }
+
   lldb::ProcessSP DebugProcess(ProcessLaunchInfo &launch_info,
                                Debugger &debugger, Target *target,
                                Status &error) override;

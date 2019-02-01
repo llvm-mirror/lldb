@@ -136,6 +136,13 @@ public:
   virtual bool
   ParseImportedModules(const SymbolContext &sc,
                        std::vector<ConstString> &imported_modules) = 0;
+
+
+  virtual bool ParseIncludeDirectories(lldb_private::CompileUnit &comp_unit,
+                                       std::vector<ConstString> &dirs) {
+    return false;
+  }
+
   virtual size_t ParseBlocksRecursive(Function &func) = 0;
   virtual size_t ParseVariablesForContext(const SymbolContext &sc) = 0;
   virtual Type *ResolveTypeUID(lldb::user_id_t type_uid) = 0;
