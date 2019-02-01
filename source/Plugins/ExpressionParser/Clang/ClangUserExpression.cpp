@@ -36,6 +36,7 @@
 #include "lldb/Symbol/Block.h"
 #include "lldb/Symbol/ClangASTContext.h"
 #include "lldb/Symbol/ClangExternalASTSourceCommon.h"
+#include "lldb/Symbol/CompileUnit.h"
 #include "lldb/Symbol/Function.h"
 #include "lldb/Symbol/ObjectFile.h"
 #include "lldb/Symbol/SymbolVendor.h"
@@ -435,6 +436,25 @@ bool ClangUserExpression::PrepareForParsing(
   ApplyObjcCastHack(m_expr_text);
 
   SetupDeclVendor(exe_ctx, m_target);
+
+  if (StackFrame *frame = exe_ctx.GetFramePtr()) {
+    if (Block *block = frame->GetFrameBlock()) {
+      SymbolContext sc;
+
+      block->CalculateSymbolContext(&sc);
+
+      if (sc.comp_unit) {
+        StreamString error_stream;
+
+        llvm::errs() << "SC:\n";
+        auto dirs = sc.comp_unit->GetIncludeDirectories();
+        llvm::errs() << "DIRECTORIES:\n";
+        for (auto &dir : dirs) {
+          llvm::errs() << " DIR: " << dir.GetStringRef().str() << "\n";
+        }
+      }
+    }
+  }
 
   UpdateLanguageForExpr(diagnostic_manager, exe_ctx);
   return true;
