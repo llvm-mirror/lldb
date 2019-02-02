@@ -397,7 +397,7 @@ void ClangUserExpression::UpdateLanguageForExpr(
       m_expr_lang = lldb::eLanguageTypeC;
 
     if (!source_code->GetText(m_transformed_text, m_expr_lang,
-                              m_in_static_method, exe_ctx)) {
+                              m_in_static_method, exe_ctx, {"std"})) {
       diagnostic_manager.PutString(eDiagnosticSeverityError,
                                    "couldn't construct expression body");
       return;
@@ -440,18 +440,11 @@ bool ClangUserExpression::PrepareForParsing(
   if (StackFrame *frame = exe_ctx.GetFramePtr()) {
     if (Block *block = frame->GetFrameBlock()) {
       SymbolContext sc;
-
       block->CalculateSymbolContext(&sc);
-
       if (sc.comp_unit) {
-        StreamString error_stream;
-
-        llvm::errs() << "SC:\n";
         auto dirs = sc.comp_unit->GetIncludeDirectories();
-        llvm::errs() << "DIRECTORIES:\n";
-        for (auto &dir : dirs) {
-          llvm::errs() << " DIR: " << dir.GetStringRef().str() << "\n";
-        }
+        for (auto &dir : dirs)
+          m_include_directories.push_back(dir);
       }
     }
   }
@@ -515,7 +508,8 @@ bool ClangUserExpression::Parse(DiagnosticManager &diagnostic_manager,
   // succeeds or the rewrite parser we might make if it fails.  But the
   // parser_sp will never be empty.
 
-  ClangExpressionParser parser(exe_scope, *this, generate_debug_info);
+  ClangExpressionParser parser(exe_scope, *this, generate_debug_info,
+                               m_include_directories);
 
   unsigned num_errors = parser.Parse(diagnostic_manager);
 

@@ -163,6 +163,7 @@ public:
       Info.FormatDiagnostic(diag_str);
       diag_str.push_back('\0');
       const char *data = diag_str.data();
+      Info.getLocation().dump(Info.getSourceManager());
 
       lldb_private::DiagnosticSeverity severity;
       bool make_new_diagnostic = true;
@@ -938,9 +939,10 @@ public:
 
 ClangExpressionParser::ClangExpressionParser(ExecutionContextScope *exe_scope,
                                              Expression &expr,
-                                             bool generate_debug_info)
+                                             bool generate_debug_info,
+                                             std::vector<ConstString> include_directories)
     : ExpressionParser(exe_scope, expr, generate_debug_info), m_compiler(),
-      m_pp_callbacks(nullptr) {
+      m_pp_callbacks(nullptr), m_include_directories(include_directories) {
   Log *log(lldb_private::GetLogIfAllCategoriesSet(LIBLLDB_LOG_EXPRESSIONS));
 
   // We can't compile expressions without a target.  So if the exe_scope is
@@ -1162,20 +1164,27 @@ ClangExpressionParser::ClangExpressionParser(ExecutionContextScope *exe_scope,
   // Owned by the host.
   //const clang::driver::ToolChain &TC = driver.getToolChain(*UArgs, m_compiler->getTargetOpts().Triple);
 
-  if (false) {
-    m_compiler->getHeaderSearchOpts().AddPath(
-        "/usr/include/c++/8.2.1/", clang::frontend::IncludeDirGroup::System,
-        false, true);
 
-    m_compiler->getHeaderSearchOpts().AddPath(
-        "/usr/include/c++/8.2.1/x86_64-pc-linux-gnu/",
-        clang::frontend::IncludeDirGroup::System, false, true);
-  } else {
-    m_compiler->getHeaderSearchOpts().UseLibcxx = true;
-    m_compiler->getHeaderSearchOpts().AddPath(
-        "/usr/include/c++/v1/", clang::frontend::IncludeDirGroup::System, false,
-        true);
+  llvm::Regex resource_dir_regex(R"re([\s\S]*\/clang\/[0-9.]+\/include[\s\S]*)re");
+  {
+    std::string regex_error;
+    if (!resource_dir_regex.isValid(regex_error)) {
+      llvm::errs() << "regex error:" << regex_error << "\n";
+      assert(false && "resource_dir_regex is invalid");
+    }
   }
+
+  for (ConstString dir : m_include_directories) {
+    if (resource_dir_regex.match(dir.AsCString())) {
+      llvm::errs() << "IGNORE: " << dir.AsCString() << "\n";
+      continue;
+    } else
+      llvm::errs() << "INC: " << dir.AsCString() << "\n";
+    m_compiler->getHeaderSearchOpts().AddPath(dir.AsCString(),
+                                              clang::frontend::IncludeDirGroup::System,
+                                              false, true);
+  }
+
   m_compiler->getHeaderSearchOpts().ModuleCachePath =
       "/tmp/org.llvm.lldb.cache/";
   m_compiler->getHeaderSearchOpts().ImplicitModuleMaps = true;
@@ -1187,9 +1196,6 @@ ClangExpressionParser::ClangExpressionParser(ExecutionContextScope *exe_scope,
       "/home/teemperor/.llvm/rel-build/lib/clang/9.0.0/include",
       clang::frontend::IncludeDirGroup::System, false, true);
 
-  m_compiler->getHeaderSearchOpts().AddPath(
-      "/usr/include/", clang::frontend::IncludeDirGroup::ExternCSystem, false,
-      true);
 
   lang_opts.Bool = true;
   lang_opts.WChar = true;

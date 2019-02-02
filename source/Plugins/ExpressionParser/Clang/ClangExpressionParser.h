@@ -19,6 +19,8 @@
 #include <string>
 #include <vector>
 
+#include "llvm/Support/Regex.h"
+
 namespace clang {
 class CodeCompleteConsumer;
 }
@@ -54,7 +56,8 @@ public:
   ///     The expression to be parsed.
   //------------------------------------------------------------------
   ClangExpressionParser(ExecutionContextScope *exe_scope, Expression &expr,
-                        bool generate_debug_info);
+                        bool generate_debug_info,
+                        std::vector<ConstString> include_directories = {});
 
   //------------------------------------------------------------------
   /// Destructor
@@ -189,6 +192,8 @@ private:
   LLDBPreprocessorCallbacks *m_pp_callbacks; ///< Called when the preprocessor
                                              ///encounters module imports
   std::unique_ptr<ClangASTContext> m_ast_context;
+
+  std::vector<ConstString> m_include_directories;
 };
 }
 
