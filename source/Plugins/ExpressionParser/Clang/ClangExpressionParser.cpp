@@ -583,9 +583,12 @@ public:
   /// Gives the external AST source an opportunity to complete
   /// an incomplete type.
   void CompleteType(TagDecl *Tag) override {
-    for (size_t i = 0; i < Sources.size(); ++i)
-      while (!Tag->isCompleteDefinition())
+    while (!Tag->isCompleteDefinition())
+      for (size_t i = 0; i < Sources.size(); ++i) {
         Sources[i]->CompleteType(Tag);
+        if (Tag->isCompleteDefinition())
+          break;
+      }
   }
 
   /// Gives the external AST source an opportunity to complete an
@@ -1088,6 +1091,8 @@ ClangExpressionParser::ClangExpressionParser(ExecutionContextScope *exe_scope,
   }
   m_compiler->setTarget(target_info);
 
+  //assert(target_info->hasFloat16Type());
+
   assert(m_compiler->hasTarget());
 
   // 5. Set language options.
@@ -1175,11 +1180,8 @@ ClangExpressionParser::ClangExpressionParser(ExecutionContextScope *exe_scope,
   }
 
   for (ConstString dir : m_include_directories) {
-    if (resource_dir_regex.match(dir.AsCString())) {
-      llvm::errs() << "IGNORE: " << dir.AsCString() << "\n";
+    if (resource_dir_regex.match(dir.AsCString()))
       continue;
-    } else
-      llvm::errs() << "INC: " << dir.AsCString() << "\n";
     m_compiler->getHeaderSearchOpts().AddPath(dir.AsCString(),
                                               clang::frontend::IncludeDirGroup::System,
                                               false, true);

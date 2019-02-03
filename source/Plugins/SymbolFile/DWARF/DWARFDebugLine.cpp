@@ -452,7 +452,6 @@ bool DWARFDebugLine::ParsePrologue(const DWARFDataExtractor &debug_line_data,
         if (!value.ExtractValue(debug_line_data, offset_ptr))
           return false;
         prologue->include_directories.push_back(value.AsCString());
-        llvm::errs() << "F DIR" << value.AsCString() << "\n";
       }
     }
 
@@ -497,7 +496,6 @@ bool DWARFDebugLine::ParsePrologue(const DWARFDataExtractor &debug_line_data,
     while (*offset_ptr < end_prologue_offset) {
       s = debug_line_data.GetCStr(offset_ptr);
       if (s && s[0]) {
-        llvm::errs() << "F DIR" << s << "\n";
         prologue->include_directories.push_back(s);
       } else
         break;
